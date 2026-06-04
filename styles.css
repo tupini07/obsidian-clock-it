@@ -1,0 +1,109 @@
+/* Clock In widget styles */
+
+.clock-in-widget {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 10px 12px;
+	margin: 4px 0;
+	background: var(--background-secondary);
+	font-size: var(--font-ui-small);
+}
+
+.clock-in-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+
+.clock-in-title {
+	font-weight: 600;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	font-size: var(--font-ui-smaller);
+}
+
+.clock-in-total {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.clock-in-warning {
+	color: var(--text-error);
+	margin-bottom: 8px;
+}
+
+.clock-in-controls {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+
+.clock-in-btn {
+	cursor: pointer;
+}
+
+.clock-in-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.clock-in-start {
+	color: var(--text-success, var(--text-normal));
+}
+
+.clock-in-stop {
+	color: var(--text-error);
+}
+
+.clock-in-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+
+.clock-in-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.clock-in-input {
+	width: 5.5em;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+}
+
+.clock-in-dash {
+	color: var(--text-muted);
+}
+
+.clock-in-row-open .clock-in-input:first-of-type {
+	box-shadow: 0 0 0 2px var(--interactive-accent);
+	border-radius: 4px;
+}
+
+.clock-in-row-invalid .clock-in-input {
+	border-color: var(--text-error);
+}
+
+.clock-in-delete {
+	margin-left: auto;
+	line-height: 1;
+	padding: 2px 8px;
+}
+
+.clock-in-empty {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+.clock-in-help pre {
+	background: var(--background-primary);
+	padding: 6px 8px;
+	border-radius: 4px;
+}

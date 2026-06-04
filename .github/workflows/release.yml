@@ -1,0 +1,121 @@
+name: Release
+
+# Manually triggered release workflow.
+# Builds the plugin, tags a date-based version, publishes a GitHub release with the
+# assets BRAT needs (manifest.json, main.js, styles.css), then deletes every older
+# release (and its tag/artifacts) so only the latest release is ever kept.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Compute date-based version
+        id: version
+        run: |
+          # BRAT/Obsidian require a valid semver (no leading zeros in any segment).
+          # We mirror a yyyy.mm.ddhhmm scheme but strip leading zeros per segment so
+          # the version stays valid semver and monotonically increasing over time:
+          #   MAJOR = year, MINOR = month, PATCH = ddhhmm (as an integer).
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%-m)
+          DDHHMM=$(date -u +%d%H%M)
+          PATCH=$((10#$DDHHMM))
+          VERSION="${YEAR}.${MONTH}.${PATCH}"
+          echo "Computed version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The version is minute-granular, so two runs within the same UTC minute
+          # would collide. Fail early with a clear message instead of a confusing
+          # "tag already exists" error mid-way through the job.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists. Wait a minute and re-run." >&2
+            exit 1
+          fi
+
+      - name: Update manifest.json and versions.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          MIN_APP_VERSION=$(jq -r '.minAppVersion' manifest.json)
+
+          tmp=$(mktemp)
+          jq --arg v "$VERSION" '.version = $v' manifest.json > "$tmp" && mv "$tmp" manifest.json
+
+          tmp=$(mktemp)
+          jq --arg v "$VERSION" --arg min "$MIN_APP_VERSION" '. + {($v): $min}' versions.json > "$tmp" && mv "$tmp" versions.json
+
+      - name: Commit version bump
+        id: commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json versions.json
+          if git diff --staged --quiet; then
+            echo "No manifest changes to commit."
+          else
+            git commit -m "chore: release $VERSION"
+            git push
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Sanity-check the assets BRAT needs and that the manifest version matches.
+          test -f main.js
+          test -f manifest.json
+          test -f styles.css
+          jq -e --arg v "$VERSION" '.version == $v' manifest.json >/dev/null
+
+          gh release create "$VERSION" \
+            main.js manifest.json styles.css \
+            --title "$VERSION" \
+            --target "${{ steps.commit.outputs.sha }}" \
+            --notes "Automated release $VERSION"
+
+      - name: Delete older releases and their tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Keep only the release we just created; delete every other release,
+          # which also removes its uploaded artifacts. --cleanup-tag removes the git tag too.
+          tags=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          for tag in $tags; do
+            if [ "$tag" != "$VERSION" ]; then
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" --cleanup-tag --yes
+            fi
+          done
