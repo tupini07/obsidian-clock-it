@@ -11,6 +11,12 @@ import {
 	totalMinutes,
 	countOpen,
 	hasInvalid,
+	countInvalid,
+	isTrackedWorkDay,
+	summarizeClockDay,
+	summarizeClockBalance,
+	balanceLabel,
+	formatSignedDuration,
 	addOpenSegment,
 	closeOpenSegment,
 	addBlankRow,
@@ -261,5 +267,129 @@ describe("buildSegment", () => {
 
 	it("treats empty start as invalid", () => {
 		expect(buildSegment("", "").status).toBe("invalid-time");
+	});
+});
+
+describe("countInvalid", () => {
+	it("counts only uninterpretable segments", () => {
+		const segs = parseSegments([
+			"09:00-11:00", // closed
+			"13:00-", // open
+			"bad", // invalid-format
+			"25:00-26:00", // invalid-time
+			"11:00-09:00", // end-before-start
+		]);
+		expect(countInvalid(segs)).toBe(3);
+	});
+});
+
+describe("isTrackedWorkDay", () => {
+	it("is true when the array has at least one non-empty segment", () => {
+		expect(isTrackedWorkDay(["09:00-11:00"])).toBe(true);
+		expect(isTrackedWorkDay(["", "13:00-"])).toBe(true);
+	});
+
+	it("is false for empty/missing/non-array values", () => {
+		expect(isTrackedWorkDay([])).toBe(false);
+		expect(isTrackedWorkDay(["", "  "])).toBe(false);
+		expect(isTrackedWorkDay(undefined)).toBe(false);
+		expect(isTrackedWorkDay("09:00-11:00")).toBe(false);
+		expect(isTrackedWorkDay(null)).toBe(false);
+	});
+});
+
+describe("summarizeClockDay", () => {
+	it("uses closed durations and the day's target", () => {
+		const segs = parseSegments(["09:00-11:00", "13:00-15:30"]);
+		const day = summarizeClockDay("a.md", segs, 480, 0, false);
+		expect(day.workedMinutes).toBe(270); // 2h + 2h30
+		expect(day.targetMinutes).toBe(480);
+		expect(day.deltaMinutes).toBe(-210);
+		expect(day.openCount).toBe(0);
+		expect(day.invalidCount).toBe(0);
+	});
+
+	it("counts an open segment live only when countOpenLive is true", () => {
+		const segs = parseSegments(["09:00-11:00", "13:00-"]); // 2h closed + open
+		const now = 14 * 60; // 14:00 -> open contributes 60m when live
+		const live = summarizeClockDay("today.md", segs, 480, now, true);
+		expect(live.workedMinutes).toBe(180);
+		expect(live.openCount).toBe(1);
+
+		const stale = summarizeClockDay("old.md", segs, 480, now, false);
+		expect(stale.workedMinutes).toBe(120); // open ignored
+		expect(stale.openCount).toBe(1); // still reported for warnings
+	});
+
+	it("ignores invalid segments in worked time but reports their count", () => {
+		const segs = parseSegments(["09:00-11:00", "bad", "11:00-09:00"]);
+		const day = summarizeClockDay("x.md", segs, 0, 0, false);
+		expect(day.workedMinutes).toBe(120);
+		expect(day.invalidCount).toBe(2);
+	});
+});
+
+describe("summarizeClockBalance", () => {
+	it("sums worked, target and delta across days", () => {
+		const days = [
+			summarizeClockDay("a", parseSegments(["09:00-17:00"]), 480, 0, false), // 8h/8h
+			summarizeClockDay("b", parseSegments(["09:00-18:00"]), 480, 0, false), // 9h/8h
+			summarizeClockDay("c", parseSegments(["09:00-12:00"]), 480, 0, false), // 3h/8h
+		];
+		const bal = summarizeClockBalance(days);
+		expect(bal.dayCount).toBe(3);
+		expect(bal.workedMinutes).toBe(480 + 540 + 180);
+		expect(bal.targetMinutes).toBe(1440);
+		expect(bal.deltaMinutes).toBe(1200 - 1440); // -240 (4h owed)
+	});
+
+	it("aggregates open and invalid counts and handles no days", () => {
+		const empty = summarizeClockBalance([]);
+		expect(empty).toEqual({
+			workedMinutes: 0,
+			targetMinutes: 0,
+			deltaMinutes: 0,
+			dayCount: 0,
+			openCount: 0,
+			staleOpenCount: 0,
+			invalidCount: 0,
+		});
+	});
+
+	it("reports stale open segments (open in a non-live day)", () => {
+		const today = summarizeClockDay(
+			"today",
+			parseSegments(["09:00-"]),
+			480,
+			10 * 60,
+			true
+		);
+		const old = summarizeClockDay(
+			"old",
+			parseSegments(["09:00-"]),
+			480,
+			10 * 60,
+			false
+		);
+		const bal = summarizeClockBalance([today, old]);
+		expect(bal.openCount).toBe(2);
+		expect(bal.staleOpenCount).toBe(1); // only the old note's open is stale
+	});
+});
+
+describe("balanceLabel", () => {
+	it("classifies sign of the delta", () => {
+		expect(balanceLabel(150)).toBe("ahead");
+		expect(balanceLabel(-150)).toBe("owed");
+		expect(balanceLabel(0)).toBe("balanced");
+		expect(balanceLabel(0.4)).toBe("balanced"); // rounds to 0
+	});
+});
+
+describe("formatSignedDuration", () => {
+	it("prefixes a sign and never shows a negative inside the duration", () => {
+		expect(formatSignedDuration(270)).toBe("+4h 30m");
+		expect(formatSignedDuration(-210)).toBe("\u22123h 30m");
+		expect(formatSignedDuration(0)).toBe("0h 00m");
 	});
 });

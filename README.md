@@ -58,6 +58,38 @@ clock-in-target: "06:00"
 ---
 ```
 
+## Cumulative balance (`clock-in-summary`)
+
+Because some days you work more and some less, it helps to see how many hours
+you **owe** or are **ahead** overall. Add a `clock-in-summary` block to any note
+(a dashboard, a weekly note, your daily-note template, …):
+
+````markdown
+```clock-in-summary
+```
+````
+
+It scans every note that has tracked work and shows a single cumulative balance:
+
+```text
+Clock In — Balance
++4h 30m ahead
+156h 30m worked / 152h target · 19 work days
+```
+
+- A **work day** is any note whose frontmatter has at least one `clock-in`
+  segment. The total target is the **sum of each day's target** (honouring
+  per-note `clock-in-target` overrides), not simply `days × default target`.
+- **Balance = worked − target.** Positive is shown as `ahead` (green), negative
+  as `owed` (red), and zero as `on target`.
+- The running segment in **today's** daily note counts live; a forgotten running
+  segment in an older note is *not* counted (and is flagged), since it has no
+  date and would otherwise inflate the balance forever. Today is detected from a
+  leading `YYYY-MM-DD` in the note's filename (the default Daily Notes format).
+- Invalid segments count as `0` and are surfaced as a small warning.
+- The detail line (`… worked / … target · N work days`) can be toggled off in
+  the plugin settings (**Show balance details**) if you only want the headline.
+
 ## Notes & limitations
 
 - Times are `HH:mm` only. A single segment **cannot cross midnight**; an end

@@ -107,3 +107,62 @@
 	padding: 6px 8px;
 	border-radius: 4px;
 }
+
+/* Clock In summary (cumulative balance) styles */
+
+.clock-in-summary {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 10px 12px;
+	margin: 4px 0;
+	background: var(--background-secondary);
+	font-size: var(--font-ui-small);
+}
+
+.clock-in-summary-header {
+	margin-bottom: 6px;
+}
+
+.clock-in-summary-title {
+	font-weight: 600;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	font-size: var(--font-ui-smaller);
+}
+
+.clock-in-summary-delta {
+	font-size: var(--font-ui-large);
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-normal);
+}
+
+.clock-in-summary-delta.clock-in-delta-ahead {
+	color: var(--text-success, var(--text-normal));
+}
+
+.clock-in-summary-delta.clock-in-delta-owed {
+	color: var(--text-error);
+}
+
+.clock-in-summary-delta.clock-in-delta-balanced {
+	color: var(--text-muted);
+}
+
+.clock-in-summary-detail {
+	margin-top: 2px;
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.clock-in-summary-warning {
+	margin-top: 6px;
+	color: var(--text-warning, var(--text-error));
+	font-size: var(--font-ui-smaller);
+}
+
+.clock-in-summary-empty {
+	color: var(--text-muted);
+	font-style: italic;
+}

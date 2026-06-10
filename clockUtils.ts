@@ -155,6 +155,127 @@ export function hasInvalid(segments: Segment[]): boolean {
 	);
 }
 
+/** Count how many segments cannot be cleanly interpreted. */
+export function countInvalid(segments: Segment[]): number {
+	return segments.filter(
+		(seg) =>
+			seg.status === "invalid-format" ||
+			seg.status === "invalid-time" ||
+			seg.status === "end-before-start"
+	).length;
+}
+
+// --- Cumulative balance ------------------------------------------------------
+
+/**
+ * True if a raw frontmatter `clock-in` value represents a tracked work day:
+ * an array containing at least one non-empty segment string. A note that only
+ * sets a target, has an empty list, or has no clock-in key is NOT a work day.
+ */
+export function isTrackedWorkDay(rawSegments: unknown): boolean {
+	if (!Array.isArray(rawSegments)) return false;
+	return rawSegments.some((item) => String(item ?? "").trim().length > 0);
+}
+
+/** Per-day rollup used to build a cumulative balance. */
+export interface ClockDaySummary {
+	/** Stable identifier for the day (typically the note path). */
+	id: string;
+	workedMinutes: number;
+	targetMinutes: number;
+	deltaMinutes: number;
+	openCount: number;
+	/** Open segments NOT counted live (i.e. a forgotten clock in an old note). */
+	staleOpenCount: number;
+	invalidCount: number;
+}
+
+/** Aggregate balance across all tracked work days. */
+export interface ClockBalanceSummary {
+	workedMinutes: number;
+	targetMinutes: number;
+	/** workedMinutes - targetMinutes. Positive = ahead, negative = owed. */
+	deltaMinutes: number;
+	dayCount: number;
+	openCount: number;
+	/** Open segments NOT counted live, summed across days. */
+	staleOpenCount: number;
+	invalidCount: number;
+}
+
+/**
+ * Build a per-day summary from parsed segments and that day's effective target.
+ * Open segments are only counted toward worked time when `countOpenLive` is
+ * true (i.e. the day is today); otherwise a stale open segment contributes 0
+ * but is still reported via openCount / staleOpenCount so callers can warn.
+ */
+export function summarizeClockDay(
+	id: string,
+	segments: Segment[],
+	targetMinutes: number,
+	nowMinutes: number,
+	countOpenLive: boolean
+): ClockDaySummary {
+	const worked = segments.reduce((sum, seg) => {
+		if (seg.status === "open" && !countOpenLive) return sum;
+		return sum + segmentDurationMinutes(seg, nowMinutes);
+	}, 0);
+	const open = countOpen(segments);
+	return {
+		id,
+		workedMinutes: worked,
+		targetMinutes,
+		deltaMinutes: worked - targetMinutes,
+		openCount: open,
+		staleOpenCount: countOpenLive ? 0 : open,
+		invalidCount: countInvalid(segments),
+	};
+}
+
+/** Sum a list of per-day summaries into a single cumulative balance. */
+export function summarizeClockBalance(
+	days: ClockDaySummary[]
+): ClockBalanceSummary {
+	const acc: ClockBalanceSummary = {
+		workedMinutes: 0,
+		targetMinutes: 0,
+		deltaMinutes: 0,
+		dayCount: days.length,
+		openCount: 0,
+		staleOpenCount: 0,
+		invalidCount: 0,
+	};
+	for (const day of days) {
+		acc.workedMinutes += day.workedMinutes;
+		acc.targetMinutes += day.targetMinutes;
+		acc.openCount += day.openCount;
+		acc.staleOpenCount += day.staleOpenCount;
+		acc.invalidCount += day.invalidCount;
+	}
+	acc.deltaMinutes = acc.workedMinutes - acc.targetMinutes;
+	return acc;
+}
+
+/** Classify a signed delta in minutes. */
+export function balanceLabel(
+	deltaMinutes: number
+): "ahead" | "owed" | "balanced" {
+	const rounded = Math.round(deltaMinutes);
+	if (rounded > 0) return "ahead";
+	if (rounded < 0) return "owed";
+	return "balanced";
+}
+
+/**
+ * Format a signed duration for a balance, e.g. 270 -> "+4h 30m",
+ * -210 -> "−3h 30m", 0 -> "0h 00m". Uses a true minus sign (−) for negatives.
+ */
+export function formatSignedDuration(totalMinutes: number): string {
+	const rounded = Math.round(totalMinutes);
+	const sign = rounded > 0 ? "+" : rounded < 0 ? "\u2212" : "";
+	return `${sign}${formatDuration(Math.abs(rounded))}`;
+}
+
 // --- Mutation helpers (return new arrays; never mutate in place) -------------
 
 /** Append a new open segment starting at nowMinutes. */

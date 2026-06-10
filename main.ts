@@ -17,6 +17,12 @@ import {
 	totalMinutes,
 	countOpen,
 	formatDuration,
+	formatSignedDuration,
+	balanceLabel,
+	isTrackedWorkDay,
+	summarizeClockDay,
+	summarizeClockBalance,
+	ClockBalanceSummary,
 	addOpenSegment,
 	closeOpenSegment,
 	addBlankRow,
@@ -31,10 +37,13 @@ const TARGET_KEY = "clock-in-target";
 interface ClockInSettings {
 	/** Default daily target in hours, used when a note has no clock-in-target. */
 	targetHours: number;
+	/** Show the "X worked / Y target · N days" detail line in the summary. */
+	showSummaryDetails: boolean;
 }
 
 const DEFAULT_SETTINGS: ClockInSettings = {
 	targetHours: 8,
+	showSummaryDetails: true,
 };
 
 /** Current local wall-clock time as minutes since midnight. */
@@ -43,11 +52,34 @@ function nowMinutes(): number {
 	return d.getHours() * 60 + d.getMinutes();
 }
 
+/** Today's date as a local "YYYY-MM-DD" string, used to match daily notes. */
+function todayKey(): string {
+	const d = new Date();
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${y}-${m}-${day}`;
+}
+
+/**
+ * Whether a note path belongs to "today", inferred from a leading
+ * "YYYY-MM-DD" in its basename (the default Daily Notes format). Used to decide
+ * if an open/running segment should count live toward the balance.
+ */
+function isTodayNote(path: string): boolean {
+	const base = path.split("/").pop() ?? path;
+	const match = /^(\d{4}-\d{2}-\d{2})/.exec(base);
+	return match ? match[1] === todayKey() : false;
+}
+
 export default class ClockInPlugin extends Plugin {
 	settings: ClockInSettings;
 
-	/** All mounted widgets, ticked once per second to refresh live totals. */
+	/** All mounted daily widgets, ticked once per second to refresh live totals. */
 	private widgets: Set<ClockInWidget> = new Set();
+
+	/** All mounted summary widgets, refreshed on data change and (live) per second. */
+	private summaryWidgets: Set<ClockSummaryWidget> = new Set();
 
 	async onload() {
 		await this.loadSettings();
@@ -60,6 +92,14 @@ export default class ClockInPlugin extends Plugin {
 			}
 		);
 
+		this.registerMarkdownCodeBlockProcessor(
+			"clock-in-summary",
+			(_source, el, ctx) => {
+				const widget = new ClockSummaryWidget(el, this, ctx);
+				ctx.addChild(widget);
+			}
+		);
+
 		this.addSettingTab(new ClockInSettingTab(this.app, this));
 
 		// Single plugin-wide ticker. Updates only the live total text of each
@@ -67,6 +107,7 @@ export default class ClockInPlugin extends Plugin {
 		this.registerInterval(
 			window.setInterval(() => {
 				this.widgets.forEach((w) => w.tick());
+				this.summaryWidgets.forEach((w) => w.tick());
 			}, 1000)
 		);
 
@@ -78,6 +119,15 @@ export default class ClockInPlugin extends Plugin {
 						w.onExternalChange();
 					}
 				});
+				// Any note's clock-in data can affect the cumulative balance.
+				this.summaryWidgets.forEach((w) => w.render());
+			})
+		);
+
+		// Deleting a tracked note also changes the balance.
+		this.registerEvent(
+			this.app.vault.on("delete", () => {
+				this.summaryWidgets.forEach((w) => w.render());
 			})
 		);
 	}
@@ -90,6 +140,56 @@ export default class ClockInPlugin extends Plugin {
 		this.widgets.delete(w);
 	}
 
+	registerSummaryWidget(w: ClockSummaryWidget) {
+		this.summaryWidgets.add(w);
+	}
+
+	unregisterSummaryWidget(w: ClockSummaryWidget) {
+		this.summaryWidgets.delete(w);
+	}
+
+	/** Default daily target (in minutes) from settings. */
+	defaultTargetMinutes(): number {
+		return Math.round(this.settings.targetHours * 60);
+	}
+
+	/** Effective per-day target in minutes, honouring a clock-in-target override. */
+	effectiveTargetMinutes(frontmatter: Record<string, unknown> | undefined): number {
+		const raw = frontmatter?.[TARGET_KEY];
+		if (typeof raw === "string") {
+			const parsed = parseTime(raw);
+			if (parsed !== null) return parsed;
+		}
+		return this.defaultTargetMinutes();
+	}
+
+	/**
+	 * Scan every markdown note for clock-in data and roll it up into a single
+	 * cumulative balance across all tracked work days. Open/running segments
+	 * are only counted live for today's daily note.
+	 */
+	computeBalance(): ClockBalanceSummary {
+		const now = nowMinutes();
+		const days = [];
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			const raw = fm?.[FRONTMATTER_KEY];
+			if (!isTrackedWorkDay(raw)) continue;
+			const segments = parseSegments(raw);
+			const target = this.effectiveTargetMinutes(fm);
+			days.push(
+				summarizeClockDay(
+					file.path,
+					segments,
+					target,
+					now,
+					isTodayNote(file.path)
+				)
+			);
+		}
+		return summarizeClockBalance(days);
+	}
+
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 	}
@@ -98,6 +198,7 @@ export default class ClockInPlugin extends Plugin {
 		await this.saveData(this.settings);
 		// Re-read targets in any open widgets.
 		this.widgets.forEach((w) => w.render());
+		this.summaryWidgets.forEach((w) => w.render());
 	}
 }
 
@@ -154,12 +255,7 @@ class ClockInWidget extends MarkdownRenderChild {
 		const fm = file
 			? this.plugin.app.metadataCache.getFileCache(file)?.frontmatter
 			: undefined;
-		const raw = fm?.[TARGET_KEY];
-		if (typeof raw === "string") {
-			const parsed = parseTime(raw);
-			if (parsed !== null) return parsed;
-		}
-		return Math.round(this.plugin.settings.targetHours * 60);
+		return this.plugin.effectiveTargetMinutes(fm);
 	}
 
 	/**
@@ -388,6 +484,125 @@ class ClockInWidget extends MarkdownRenderChild {
 	}
 }
 
+/**
+ * Renders a ` ```clock-in-summary ``` ` block: a cumulative balance of worked
+ * vs. target hours across every tracked work day in the vault.
+ */
+class ClockSummaryWidget extends MarkdownRenderChild {
+	private plugin: ClockInPlugin;
+
+	// Live-updating DOM references (refreshed by tick() while work is running).
+	private deltaEl: HTMLElement | null = null;
+	private detailEl: HTMLElement | null = null;
+	private hasLiveDay = false;
+
+	constructor(
+		containerEl: HTMLElement,
+		plugin: ClockInPlugin,
+		_ctx: MarkdownPostProcessorContext
+	) {
+		super(containerEl);
+		this.plugin = plugin;
+	}
+
+	onload() {
+		this.plugin.registerSummaryWidget(this);
+		this.render();
+	}
+
+	onunload() {
+		this.plugin.unregisterSummaryWidget(this);
+	}
+
+	/** Per-second refresh of the live balance, only while a day is running. */
+	tick() {
+		if (!this.hasLiveDay) return;
+		this.refreshText(this.plugin.computeBalance());
+	}
+
+	private refreshText(balance: ClockBalanceSummary) {
+		this.hasLiveDay = balance.openCount > 0;
+
+		if (this.deltaEl) {
+			const label = balanceLabel(balance.deltaMinutes);
+			this.deltaEl.setText(
+				label === "balanced"
+					? "On target"
+					: `${formatSignedDuration(balance.deltaMinutes)} ${label}`
+			);
+			this.deltaEl.removeClass(
+				"clock-in-delta-ahead",
+				"clock-in-delta-owed",
+				"clock-in-delta-balanced"
+			);
+			this.deltaEl.addClass(`clock-in-delta-${label}`);
+		}
+
+		if (this.detailEl) {
+			this.detailEl.setText(
+				`${formatDuration(balance.workedMinutes)} worked / ` +
+					`${formatDuration(balance.targetMinutes)} target · ` +
+					`${balance.dayCount} work day${balance.dayCount === 1 ? "" : "s"}`
+			);
+		}
+	}
+
+	render() {
+		const el = this.containerEl;
+		el.empty();
+		el.addClass("clock-in-summary");
+
+		const balance = this.plugin.computeBalance();
+		this.hasLiveDay = balance.openCount > 0;
+
+		const header = el.createDiv({ cls: "clock-in-summary-header" });
+		header.createSpan({
+			cls: "clock-in-summary-title",
+			text: "Clock In — Balance",
+		});
+
+		if (balance.dayCount === 0) {
+			el.createDiv({
+				cls: "clock-in-summary-empty",
+				text: "No tracked work days yet. Add a clock-in block to a note and press Start; tracked days will appear here automatically.",
+			});
+			this.deltaEl = null;
+			this.detailEl = null;
+			return;
+		}
+
+		this.deltaEl = el.createDiv({ cls: "clock-in-summary-delta" });
+
+		this.detailEl = this.plugin.settings.showSummaryDetails
+			? el.createDiv({ cls: "clock-in-summary-detail" })
+			: null;
+
+		const warnings: string[] = [];
+		if (balance.invalidCount > 0) {
+			warnings.push(
+				`${balance.invalidCount} invalid segment${
+					balance.invalidCount === 1 ? "" : "s"
+				} (counted as 0)`
+			);
+		}
+		if (balance.staleOpenCount > 0) {
+			warnings.push(
+				`${balance.staleOpenCount} running segment${
+					balance.staleOpenCount === 1 ? "" : "s"
+				} in past notes (not counted — stop them to include)`
+			);
+		}
+		if (warnings.length > 0) {
+			el.createDiv({
+				cls: "clock-in-summary-warning",
+				text: `Heads up: ${warnings.join("; ")}.`,
+			});
+		}
+
+		this.refreshText(balance);
+	}
+}
+
 class ClockInSettingTab extends PluginSettingTab {
 	plugin: ClockInPlugin;
 
@@ -417,11 +632,30 @@ class ClockInSettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("Show balance details")
+			.setDesc(
+				"In the clock-in-summary block, show the breakdown line (total worked / total target · number of work days) under the headline balance."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showSummaryDetails)
+					.onChange(async (value) => {
+						this.plugin.settings.showSummaryDetails = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		const help = containerEl.createDiv({ cls: "clock-in-help" });
 		help.createEl("p", {
-			text: "Add a clock-in code block to a note to show the widget:",
+			text: "Add a clock-in code block to a note to track a day:",
 		});
 		const pre = help.createEl("pre");
 		pre.createEl("code", { text: "```clock-in\n```" });
+		help.createEl("p", {
+			text: "Add a clock-in-summary block anywhere to see your cumulative balance across all tracked days:",
+		});
+		const pre2 = help.createEl("pre");
+		pre2.createEl("code", { text: "```clock-in-summary\n```" });
 	}
 }
