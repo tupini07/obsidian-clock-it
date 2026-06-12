@@ -164,30 +164,43 @@ export default class ClockInPlugin extends Plugin {
 	}
 
 	/**
-	 * Scan every markdown note for clock-in data and roll it up into a single
-	 * cumulative balance across all tracked work days. Open/running segments
-	 * are only counted live for today's daily note.
+	 * Scan every markdown note for clock-in data and roll it up into a
+	 * cumulative balance. "Today" (a daily note whose filename date is today) is
+	 * excluded so the headline reflects the real standing balance carried into
+	 * today rather than being skewed by today's not-yet-worked target. Today's
+	 * progress is shown by its own clock-in widget.
 	 */
-	computeBalance(): ClockBalanceSummary {
+	computeBalance(): {
+		carried: ClockBalanceSummary;
+		totalTrackedDays: number;
+		todayTracked: boolean;
+	} {
 		const now = nowMinutes();
-		const days = [];
+		const carriedDays = [];
+		let totalTrackedDays = 0;
+		let todayTracked = false;
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
 			const raw = fm?.[FRONTMATTER_KEY];
 			if (!isTrackedWorkDay(raw)) continue;
+			totalTrackedDays++;
+			if (isTodayNote(file.path)) {
+				todayTracked = true;
+				continue; // today is excluded from the carried balance
+			}
 			const segments = parseSegments(raw);
 			const target = this.effectiveTargetMinutes(fm);
-			days.push(
-				summarizeClockDay(
-					file.path,
-					segments,
-					target,
-					now,
-					isTodayNote(file.path)
-				)
+			// Every carried day is in the past, so an open segment is stale
+			// (forgotten clock) and never counts live.
+			carriedDays.push(
+				summarizeClockDay(file.path, segments, target, now, false)
 			);
 		}
-		return summarizeClockBalance(days);
+		return {
+			carried: summarizeClockBalance(carriedDays),
+			totalTrackedDays,
+			todayTracked,
+		};
 	}
 
 	async loadSettings() {
@@ -485,16 +498,19 @@ class ClockInWidget extends MarkdownRenderChild {
 }
 
 /**
- * Renders a ` ```clock-in-summary ``` ` block: a cumulative balance of worked
- * vs. target hours across every tracked work day in the vault.
+ * Renders a ` ```clock-in-summary ``` ` block: the cumulative balance of worked
+ * vs. target hours carried into today (every tracked work day except today).
  */
 class ClockSummaryWidget extends MarkdownRenderChild {
 	private plugin: ClockInPlugin;
 
-	// Live-updating DOM references (refreshed by tick() while work is running).
+	// Live DOM references, plus the day we last rendered for (to catch the
+	// balance changing when the clock rolls over midnight while the note stays
+	// open). The carried balance has no per-second component, so we only
+	// recompute on data changes and on a day rollover.
 	private deltaEl: HTMLElement | null = null;
 	private detailEl: HTMLElement | null = null;
-	private hasLiveDay = false;
+	private renderedDay = "";
 
 	constructor(
 		containerEl: HTMLElement,
@@ -514,46 +530,18 @@ class ClockSummaryWidget extends MarkdownRenderChild {
 		this.plugin.unregisterSummaryWidget(this);
 	}
 
-	/** Per-second refresh of the live balance, only while a day is running. */
+	/** Re-render only when the day rolls over (today moves into the balance). */
 	tick() {
-		if (!this.hasLiveDay) return;
-		this.refreshText(this.plugin.computeBalance());
-	}
-
-	private refreshText(balance: ClockBalanceSummary) {
-		this.hasLiveDay = balance.openCount > 0;
-
-		if (this.deltaEl) {
-			const label = balanceLabel(balance.deltaMinutes);
-			this.deltaEl.setText(
-				label === "balanced"
-					? "On target"
-					: `${formatSignedDuration(balance.deltaMinutes)} ${label}`
-			);
-			this.deltaEl.removeClass(
-				"clock-in-delta-ahead",
-				"clock-in-delta-owed",
-				"clock-in-delta-balanced"
-			);
-			this.deltaEl.addClass(`clock-in-delta-${label}`);
-		}
-
-		if (this.detailEl) {
-			this.detailEl.setText(
-				`${formatDuration(balance.workedMinutes)} worked / ` +
-					`${formatDuration(balance.targetMinutes)} target · ` +
-					`${balance.dayCount} work day${balance.dayCount === 1 ? "" : "s"}`
-			);
-		}
+		if (this.renderedDay !== todayKey()) this.render();
 	}
 
 	render() {
 		const el = this.containerEl;
 		el.empty();
 		el.addClass("clock-in-summary");
+		this.renderedDay = todayKey();
 
-		const balance = this.plugin.computeBalance();
-		this.hasLiveDay = balance.openCount > 0;
+		const { carried, totalTrackedDays } = this.plugin.computeBalance();
 
 		const header = el.createDiv({ cls: "clock-in-summary-header" });
 		header.createSpan({
@@ -561,34 +549,54 @@ class ClockSummaryWidget extends MarkdownRenderChild {
 			text: "Clock In — Balance",
 		});
 
-		if (balance.dayCount === 0) {
+		if (carried.dayCount === 0) {
+			// Distinguish "nothing tracked at all" from "only today tracked".
 			el.createDiv({
 				cls: "clock-in-summary-empty",
-				text: "No tracked work days yet. Add a clock-in block to a note and press Start; tracked days will appear here automatically.",
+				text:
+					totalTrackedDays === 0
+						? "No tracked work days yet. Add a clock-in block to a note and press Start; tracked days will appear here automatically."
+						: "No work days before today yet. Your standing balance starts once you have a tracked day in the past.",
 			});
 			this.deltaEl = null;
 			this.detailEl = null;
 			return;
 		}
 
-		this.deltaEl = el.createDiv({ cls: "clock-in-summary-delta" });
+		const label = balanceLabel(carried.deltaMinutes);
+		this.deltaEl = el.createDiv({
+			cls: `clock-in-summary-delta clock-in-delta-${label}`,
+			text:
+				label === "balanced"
+					? "On target"
+					: `${formatSignedDuration(carried.deltaMinutes)} ${label}`,
+		});
 
-		this.detailEl = this.plugin.settings.showSummaryDetails
-			? el.createDiv({ cls: "clock-in-summary-detail" })
-			: null;
+		if (this.plugin.settings.showSummaryDetails) {
+			this.detailEl = el.createDiv({
+				cls: "clock-in-summary-detail",
+				text:
+					"before today · " +
+					`${formatDuration(carried.workedMinutes)} worked / ` +
+					`${formatDuration(carried.targetMinutes)} target · ` +
+					`${carried.dayCount} work day${carried.dayCount === 1 ? "" : "s"}`,
+			});
+		} else {
+			this.detailEl = null;
+		}
 
 		const warnings: string[] = [];
-		if (balance.invalidCount > 0) {
+		if (carried.invalidCount > 0) {
 			warnings.push(
-				`${balance.invalidCount} invalid segment${
-					balance.invalidCount === 1 ? "" : "s"
+				`${carried.invalidCount} invalid segment${
+					carried.invalidCount === 1 ? "" : "s"
 				} (counted as 0)`
 			);
 		}
-		if (balance.staleOpenCount > 0) {
+		if (carried.staleOpenCount > 0) {
 			warnings.push(
-				`${balance.staleOpenCount} running segment${
-					balance.staleOpenCount === 1 ? "" : "s"
+				`${carried.staleOpenCount} running segment${
+					carried.staleOpenCount === 1 ? "" : "s"
 				} in past notes (not counted — stop them to include)`
 			);
 		}
@@ -598,8 +606,6 @@ class ClockSummaryWidget extends MarkdownRenderChild {
 				text: `Heads up: ${warnings.join("; ")}.`,
 			});
 		}
-
-		this.refreshText(balance);
 	}
 }
 

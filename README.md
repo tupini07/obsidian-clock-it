@@ -69,12 +69,13 @@ you **owe** or are **ahead** overall. Add a `clock-in-summary` block to any note
 ```
 ````
 
-It scans every note that has tracked work and shows a single cumulative balance:
+It scans every note that has tracked work and shows your **standing balance
+carried into today**:
 
 ```text
 Clock In — Balance
-+4h 30m ahead
-156h 30m worked / 152h target · 19 work days
+−2h 18m owed
+before today · 21h 42m worked / 24h target · 3 work days
 ```
 
 - A **work day** is any note whose frontmatter has at least one `clock-in`
@@ -82,13 +83,19 @@ Clock In — Balance
   per-note `clock-in-target` overrides), not simply `days × default target`.
 - **Balance = worked − target.** Positive is shown as `ahead` (green), negative
   as `owed` (red), and zero as `on target`.
-- The running segment in **today's** daily note counts live; a forgotten running
-  segment in an older note is *not* counted (and is flagged), since it has no
-  date and would otherwise inflate the balance forever. Today is detected from a
-  leading `YYYY-MM-DD` in the note's filename (the default Daily Notes format).
+- **Today is excluded** from this balance. Otherwise today's full target would
+  count the moment the day begins (before you've worked it), making the number
+  look alarmingly negative. The balance therefore shows what you carried in *up
+  to and including yesterday* — your real standing debt or surplus. Today's
+  progress is shown by that day's own `clock-in` widget, and folds into the
+  balance once the day rolls over. Today is detected from a leading `YYYY-MM-DD`
+  in the note's filename (the default Daily Notes format).
+- A forgotten running segment in a past note is *not* counted (and is flagged),
+  since it has no date and would otherwise inflate the balance forever.
 - Invalid segments count as `0` and are surfaced as a small warning.
-- The detail line (`… worked / … target · N work days`) can be toggled off in
-  the plugin settings (**Show balance details**) if you only want the headline.
+- The detail line (`before today · … worked / … target · N work days`) can be
+  toggled off in the plugin settings (**Show balance details**) if you only want
+  the headline.
 
 ## Notes & limitations
 
