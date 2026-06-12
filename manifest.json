@@ -2,7 +2,7 @@
   "id": "clock-in",
   "name": "Clock In",
   "description": "Track your daily work time directly in a note with a start/stop clock widget, inspired by emacs org-mode's clock.",
-  "version": "2026.6.101010",
+  "version": "2026.6.121219",
   "author": "Andrea Tupini",
   "authorUrl": "",
   "isDesktopOnly": false,
